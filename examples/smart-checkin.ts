@@ -11,15 +11,22 @@
  * Run: bun run examples/smart-checkin.ts
  */
 
+import "dotenv/config";
 import { spawn } from "bun";
 import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
+import { createClient } from "@supabase/supabase-js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
 const STATE_FILE =
   process.env.CHECKIN_STATE_FILE || "/tmp/checkin-state.json";
+
+const supabase = createClient(
+  process.env.SUPABASE_URL || "",
+  process.env.SUPABASE_ANON_KEY || ""
+);
 
 // ============================================================
 // STATE MANAGEMENT
@@ -53,22 +60,62 @@ async function saveState(state: CheckinState): Promise<void> {
 // ============================================================
 
 async function getGoals(): Promise<string[]> {
-  // Load from your persistence layer
-  // Example: Supabase, JSON file, etc.
-  return ["Finish video edit by 5pm", "Review PR"];
+  try {
+    const { data } = await supabase
+      .from("memory")
+      .select("content, deadline")
+      .eq("type", "goal")
+      .order("priority", { ascending: false });
+    if (data && data.length > 0) {
+      return data.map((g: any) => {
+        const deadline = g.deadline ? ` (due: ${new Date(g.deadline).toLocaleDateString()})` : "";
+        return `${g.content}${deadline}`;
+      });
+    }
+  } catch (e) {
+    console.error("Failed to fetch goals from Supabase:", e);
+  }
+  return [];
 }
 
 async function getCalendarContext(): Promise<string> {
-  // What's coming up today?
-  return "Next event: Team call in 2 hours";
+  // Uses Claude CLI with Google Calendar MCP to fetch today's events
+  try {
+    const proc = spawn(
+      [CLAUDE_PATH, "-p", "List my calendar events for today. Just the times and titles, one per line. If none, say 'No events today.'", "--output-format", "text"],
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env, CLAUDECODE: undefined } }
+    );
+    const output = await new Response(proc.stdout).text();
+    return output.trim() || "No calendar info available";
+  } catch {
+    return "Calendar unavailable";
+  }
 }
 
 async function getLastActivity(): Promise<string> {
+  // Try Supabase first for real last message time
+  try {
+    const { data } = await supabase
+      .from("messages")
+      .select("created_at")
+      .eq("role", "user")
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (data && data.length > 0) {
+      const lastMsg = new Date(data[0].created_at);
+      const now = new Date();
+      const hoursSince = (now.getTime() - lastMsg.getTime()) / (1000 * 60 * 60);
+      return `Last message: ${hoursSince.toFixed(1)} hours ago`;
+    }
+  } catch (e) {
+    console.error("Failed to fetch last activity from Supabase:", e);
+  }
+
+  // Fall back to state file
   const state = await loadState();
   const lastMsg = new Date(state.lastMessageTime);
   const now = new Date();
   const hoursSince = (now.getTime() - lastMsg.getTime()) / (1000 * 60 * 60);
-
   return `Last message: ${hoursSince.toFixed(1)} hours ago`;
 }
 
