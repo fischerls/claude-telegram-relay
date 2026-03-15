@@ -10,6 +10,7 @@
 import { Bot, Context } from "grammy";
 import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
+import { unlinkSync } from "fs";
 import { join, dirname } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { transcribe } from "./transcribe.ts";
@@ -98,7 +99,7 @@ async function releaseLock(): Promise<void> {
 // Cleanup on exit
 process.on("exit", () => {
   try {
-    require("fs").unlinkSync(LOCK_FILE);
+    unlinkSync(LOCK_FILE);
   } catch {}
 });
 process.on("SIGINT", async () => {
@@ -183,6 +184,8 @@ bot.use(async (ctx, next) => {
 // CORE: Call Claude CLI
 // ============================================================
 
+const CLAUDE_TIMEOUT_MS = 120_000; // 2 minutes
+
 async function callClaude(
   prompt: string,
   options?: { resume?: boolean; imagePath?: string }
@@ -205,11 +208,21 @@ async function callClaude(
       cwd: PROJECT_DIR || undefined,
       env: {
         ...process.env,
-        // Pass through any env vars Claude might need
       },
     });
 
-    const output = await new Response(proc.stdout).text();
+    // Race the process against a timeout
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => {
+        proc.kill();
+        reject(new Error("Claude CLI timed out"));
+      }, CLAUDE_TIMEOUT_MS)
+    );
+
+    const output = await Promise.race([
+      new Response(proc.stdout).text(),
+      timeoutPromise,
+    ]);
     const stderr = await new Response(proc.stderr).text();
 
     const exitCode = await proc.exited;
@@ -237,8 +250,11 @@ async function callClaude(
     }
 
     return responseText;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Spawn error:", error);
+    if (error.message === "Claude CLI timed out") {
+      return "Sorry, Claude took too long to respond. Please try again.";
+    }
     return `Error: Could not run Claude CLI`;
   }
 }
@@ -247,29 +263,41 @@ async function callClaude(
 // MESSAGE HANDLERS
 // ============================================================
 
+// Keep "typing..." visible during long operations
+function startTypingIndicator(ctx: Context): () => void {
+  const interval = setInterval(() => {
+    ctx.replyWithChatAction("typing").catch(() => {});
+  }, 4000);
+  return () => clearInterval(interval);
+}
+
 // Text messages
 bot.on("message:text", async (ctx) => {
   const text = ctx.message.text;
   console.log(`Message: ${text.substring(0, 50)}...`);
 
-  await ctx.replyWithChatAction("typing");
+  const stopTyping = startTypingIndicator(ctx);
 
-  await saveMessage("user", text);
+  try {
+    await saveMessage("user", text);
 
-  // Gather context: semantic search + facts/goals
-  const [relevantContext, memoryContext] = await Promise.all([
-    getRelevantContext(supabase, text),
-    getMemoryContext(supabase),
-  ]);
+    // Gather context: semantic search + facts/goals
+    const [relevantContext, memoryContext] = await Promise.all([
+      getRelevantContext(supabase, text),
+      getMemoryContext(supabase),
+    ]);
 
-  const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
-  const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+    const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
+    const rawResponse = await callClaude(enrichedPrompt, { resume: true });
 
-  // Parse and save any memory intents, strip tags from response
-  const response = await processMemoryIntents(supabase, rawResponse);
+    // Parse and save any memory intents, strip tags from response
+    const response = await processMemoryIntents(supabase, rawResponse);
 
-  await saveMessage("assistant", response);
-  await sendResponse(ctx, response);
+    await saveMessage("assistant", response);
+    await sendResponse(ctx, response);
+  } finally {
+    stopTyping();
+  }
 });
 
 // Voice messages
@@ -457,33 +485,42 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
   // Telegram has a 4096 character limit
   const MAX_LENGTH = 4000;
 
+  const chunks: string[] = [];
+
   if (response.length <= MAX_LENGTH) {
-    await ctx.reply(response);
-    return;
-  }
+    chunks.push(response);
+  } else {
+    let remaining = response;
 
-  // Split long responses
-  const chunks = [];
-  let remaining = response;
+    while (remaining.length > 0) {
+      if (remaining.length <= MAX_LENGTH) {
+        chunks.push(remaining);
+        break;
+      }
 
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX_LENGTH) {
-      chunks.push(remaining);
-      break;
+      // Try to split at a natural boundary
+      let splitIndex = remaining.lastIndexOf("\n\n", MAX_LENGTH);
+      if (splitIndex === -1) splitIndex = remaining.lastIndexOf("\n", MAX_LENGTH);
+      if (splitIndex === -1) splitIndex = remaining.lastIndexOf(" ", MAX_LENGTH);
+      if (splitIndex === -1) splitIndex = MAX_LENGTH;
+
+      chunks.push(remaining.substring(0, splitIndex));
+      remaining = remaining.substring(splitIndex).trim();
     }
-
-    // Try to split at a natural boundary
-    let splitIndex = remaining.lastIndexOf("\n\n", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = remaining.lastIndexOf("\n", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = remaining.lastIndexOf(" ", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = MAX_LENGTH;
-
-    chunks.push(remaining.substring(0, splitIndex));
-    remaining = remaining.substring(splitIndex).trim();
   }
 
   for (const chunk of chunks) {
-    await ctx.reply(chunk);
+    try {
+      await ctx.reply(chunk);
+    } catch (err: any) {
+      // If sending fails (e.g., bad markdown characters), retry as plain text
+      console.error("Send error, retrying as plain text:", err.message);
+      const plain = chunk.replace(/[*_`\[\]()~>#+\-=|{}.!]/g, "\\$&");
+      await ctx.reply(plain).catch(() => {
+        // Last resort: send without any formatting
+        ctx.reply("(Response contained unsupported formatting. Check logs.)").catch(() => {});
+      });
+    }
   }
 }
 
@@ -494,6 +531,13 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
 console.log("Starting Claude Telegram Relay...");
 console.log(`Authorized user: ${ALLOWED_USER_ID || "ANY (not recommended)"}`);
 console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
+
+// Global error handler — prevents silent failures
+bot.catch((err) => {
+  console.error("Bot error:", err.message || err);
+  // Try to notify the user that something went wrong
+  err.ctx?.reply("Something went wrong processing your message. Check the logs.").catch(() => {});
+});
 
 bot.start({
   onStart: () => {
