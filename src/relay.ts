@@ -31,6 +31,37 @@ const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
 const PROJECT_DIR = process.env.PROJECT_DIR || "";
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
 
+// Tools Dexter is allowed to use without prompting
+const ALLOWED_TOOLS = [
+  // Google Calendar
+  "mcp__claude_ai_Google_Calendar__gcal_list_events",
+  "mcp__claude_ai_Google_Calendar__gcal_get_event",
+  "mcp__claude_ai_Google_Calendar__gcal_find_meeting_times",
+  "mcp__claude_ai_Google_Calendar__gcal_find_my_free_time",
+  "mcp__claude_ai_Google_Calendar__gcal_create_event",
+  "mcp__claude_ai_Google_Calendar__gcal_update_event",
+  "mcp__claude_ai_Google_Calendar__gcal_delete_event",
+  "mcp__claude_ai_Google_Calendar__gcal_list_calendars",
+  "mcp__claude_ai_Google_Calendar__gcal_respond_to_event",
+  // Gmail
+  "mcp__claude_ai_Gmail__gmail_search_messages",
+  "mcp__claude_ai_Gmail__gmail_read_message",
+  "mcp__claude_ai_Gmail__gmail_read_thread",
+  "mcp__claude_ai_Gmail__gmail_create_draft",
+  "mcp__claude_ai_Gmail__gmail_list_drafts",
+  "mcp__claude_ai_Gmail__gmail_get_profile",
+  "mcp__claude_ai_Gmail__gmail_list_labels",
+  // File tools
+  "Read",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "Bash",
+  "WebSearch",
+  "WebFetch",
+].join(",");
+
 // Directories
 const TEMP_DIR = join(RELAY_DIR, "temp");
 const UPLOADS_DIR = join(RELAY_DIR, "uploads");
@@ -183,11 +214,22 @@ bot.use(async (ctx, next) => {
 // CORE: Call Claude CLI
 // ============================================================
 
+const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const PROGRESS_INTERVAL_MS = 30 * 1000; // Send progress update every 30 seconds
+
+const PROGRESS_MESSAGES = [
+  "Still working on this...",
+  "Taking a bit longer than usual, hang tight...",
+  "Still going. Complex request, give me a moment...",
+  "Almost there (or at least trying)...",
+  "Still processing. I'll let you know when it's done...",
+];
+
 async function callClaude(
   prompt: string,
-  options?: { resume?: boolean; imagePath?: string }
+  options?: { resume?: boolean; imagePath?: string; onProgress?: () => Promise<void> }
 ): Promise<string> {
-  const args = [CLAUDE_PATH, "-p", prompt];
+  const args = [CLAUDE_PATH, "-p", prompt, "--allowedTools", ALLOWED_TOOLS];
 
   // Resume previous session if available and requested
   if (options?.resume && session.sessionId) {
@@ -197,6 +239,23 @@ async function callClaude(
   args.push("--output-format", "json");
 
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
+
+  // Progress ticker: sends updates so the user knows we're not stuck
+  let progressCount = 0;
+  const progressTimer = options?.onProgress
+    ? setInterval(async () => {
+        try {
+          await options.onProgress!();
+          progressCount++;
+        } catch (err) {
+          console.error("Progress update failed:", err);
+        }
+      }, PROGRESS_INTERVAL_MS)
+    : null;
+
+  const clearProgress = () => {
+    if (progressTimer) clearInterval(progressTimer);
+  };
 
   try {
     const proc = spawn(args, {
@@ -209,10 +268,24 @@ async function callClaude(
       },
     });
 
-    const output = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
+    // Race the claude process against a timeout
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        proc.kill();
+        reject(new Error(`Claude timed out after ${CLAUDE_TIMEOUT_MS / 1000}s`));
+      }, CLAUDE_TIMEOUT_MS);
+    });
 
-    const exitCode = await proc.exited;
+    const resultPromise = (async () => {
+      const output = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const exitCode = await proc.exited;
+      return { output, stderr, exitCode };
+    })();
+
+    const { output, stderr, exitCode } = await Promise.race([resultPromise, timeoutPromise]);
+
+    clearProgress();
 
     if (exitCode !== 0) {
       console.error("Claude error:", stderr);
@@ -237,8 +310,13 @@ async function callClaude(
     }
 
     return responseText;
-  } catch (error) {
-    console.error("Spawn error:", error);
+  } catch (error: unknown) {
+    clearProgress();
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("Claude call failed:", msg);
+    if (msg.includes("timed out")) {
+      return "Sorry, that request took too long and timed out (5 min limit). Try again or break it into smaller steps.";
+    }
     return `Error: Could not run Claude CLI`;
   }
 }
@@ -246,6 +324,18 @@ async function callClaude(
 // ============================================================
 // MESSAGE HANDLERS
 // ============================================================
+
+// Helper: create a progress callback for a given chat context
+function makeProgressCallback(ctx: Context) {
+  let count = 0;
+  return async () => {
+    const msg = PROGRESS_MESSAGES[Math.min(count, PROGRESS_MESSAGES.length - 1)];
+    const elapsed = Math.round(((count + 1) * PROGRESS_INTERVAL_MS) / 1000);
+    await ctx.reply(`${msg} (${elapsed}s elapsed)`);
+    await ctx.replyWithChatAction("typing");
+    count++;
+  };
+}
 
 // Text messages
 bot.on("message:text", async (ctx) => {
@@ -263,7 +353,10 @@ bot.on("message:text", async (ctx) => {
   ]);
 
   const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
-  const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+  const rawResponse = await callClaude(enrichedPrompt, {
+    resume: true,
+    onProgress: makeProgressCallback(ctx),
+  });
 
   // Parse and save any memory intents, strip tags from response
   const response = await processMemoryIntents(supabase, rawResponse);
@@ -310,7 +403,10 @@ bot.on("message:voice", async (ctx) => {
       relevantContext,
       memoryContext
     );
-    const rawResponse = await callClaude(enrichedPrompt, { resume: true });
+    const rawResponse = await callClaude(enrichedPrompt, {
+      resume: true,
+      onProgress: makeProgressCallback(ctx),
+    });
     const claudeResponse = await processMemoryIntents(supabase, rawResponse);
 
     await saveMessage("assistant", claudeResponse);
@@ -348,7 +444,10 @@ bot.on("message:photo", async (ctx) => {
 
     await saveMessage("user", `[Image]: ${caption}`);
 
-    const claudeResponse = await callClaude(prompt, { resume: true });
+    const claudeResponse = await callClaude(prompt, {
+      resume: true,
+      onProgress: makeProgressCallback(ctx),
+    });
 
     // Cleanup after processing
     await unlink(filePath).catch(() => {});
@@ -385,7 +484,10 @@ bot.on("message:document", async (ctx) => {
 
     await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`);
 
-    const claudeResponse = await callClaude(prompt, { resume: true });
+    const claudeResponse = await callClaude(prompt, {
+      resume: true,
+      onProgress: makeProgressCallback(ctx),
+    });
 
     await unlink(filePath).catch(() => {});
 
