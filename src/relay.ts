@@ -51,6 +51,35 @@ const ALLOWED_TOOLS = [
   "mcp__claude_ai_Gmail__gmail_list_drafts",
   "mcp__claude_ai_Gmail__gmail_get_profile",
   "mcp__claude_ai_Gmail__gmail_list_labels",
+  // GHL / GrowthOS
+  "mcp__ghl__ghl_search_contacts",
+  "mcp__ghl__ghl_get_contact",
+  "mcp__ghl__ghl_create_contact",
+  "mcp__ghl__ghl_update_contact",
+  "mcp__ghl__ghl_add_contact_tags",
+  "mcp__ghl__ghl_delete_contact",
+  "mcp__ghl__ghl_list_pipelines",
+  "mcp__ghl__ghl_search_opportunities",
+  "mcp__ghl__ghl_get_opportunity",
+  "mcp__ghl__ghl_create_opportunity",
+  "mcp__ghl__ghl_update_opportunity",
+  "mcp__ghl__ghl_list_conversations",
+  "mcp__ghl__ghl_get_conversation",
+  "mcp__ghl__ghl_send_message",
+  "mcp__ghl__ghl_list_calendars",
+  "mcp__ghl__ghl_get_calendar_slots",
+  "mcp__ghl__ghl_list_appointments",
+  "mcp__ghl__ghl_create_appointment",
+  "mcp__ghl__ghl_get_location",
+  "mcp__ghl__ghl_list_tags",
+  "mcp__ghl__ghl_list_custom_fields",
+  "mcp__ghl__ghl_list_contact_notes",
+  "mcp__ghl__ghl_create_contact_note",
+  "mcp__ghl__ghl_list_contact_tasks",
+  "mcp__ghl__ghl_create_contact_task",
+  "mcp__ghl__ghl_list_social_accounts",
+  "mcp__ghl__ghl_create_social_post",
+  "mcp__ghl__ghl_upload_social_media",
   // File tools
   "Read",
   "Write",
@@ -214,7 +243,6 @@ bot.use(async (ctx, next) => {
 // CORE: Call Claude CLI
 // ============================================================
 
-const CLAUDE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const PROGRESS_INTERVAL_MS = 30 * 1000; // Send progress update every 30 seconds
 
 const PROGRESS_MESSAGES = [
@@ -268,22 +296,9 @@ async function callClaude(
       },
     });
 
-    // Race the claude process against a timeout
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        proc.kill();
-        reject(new Error(`Claude timed out after ${CLAUDE_TIMEOUT_MS / 1000}s`));
-      }, CLAUDE_TIMEOUT_MS);
-    });
-
-    const resultPromise = (async () => {
-      const output = await new Response(proc.stdout).text();
-      const stderr = await new Response(proc.stderr).text();
-      const exitCode = await proc.exited;
-      return { output, stderr, exitCode };
-    })();
-
-    const { output, stderr, exitCode } = await Promise.race([resultPromise, timeoutPromise]);
+    const output = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
 
     clearProgress();
 
@@ -314,9 +329,6 @@ async function callClaude(
     clearProgress();
     const msg = error instanceof Error ? error.message : String(error);
     console.error("Claude call failed:", msg);
-    if (msg.includes("timed out")) {
-      return "Sorry, that request took too long and timed out (5 min limit). Try again or break it into smaller steps.";
-    }
     return `Error: Could not run Claude CLI`;
   }
 }
