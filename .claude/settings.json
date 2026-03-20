@@ -36,7 +36,10 @@
       "mcp__ghl__ghl_create_contact_task",
       "mcp__ghl__ghl_list_social_accounts",
       "mcp__ghl__ghl_create_social_post",
-      "mcp__ghl__ghl_upload_social_media"
+      "mcp__ghl__ghl_upload_social_media",
+      "mcp__ghl__ghl_list_workflows",
+      "mcp__ghl__ghl_add_contact_to_workflow",
+      "mcp__ghl__ghl_remove_contact_from_workflow"
     ]
   }
 }

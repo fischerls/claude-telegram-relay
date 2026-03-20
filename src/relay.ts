@@ -80,6 +80,9 @@ const ALLOWED_TOOLS = [
   "mcp__ghl__ghl_list_social_accounts",
   "mcp__ghl__ghl_create_social_post",
   "mcp__ghl__ghl_upload_social_media",
+  "mcp__ghl__ghl_list_workflows",
+  "mcp__ghl__ghl_add_contact_to_workflow",
+  "mcp__ghl__ghl_remove_contact_from_workflow",
   // File tools
   "Read",
   "Write",
@@ -552,6 +555,34 @@ function buildPrompt(
   if (profileContext) parts.push(`\nProfile:\n${profileContext}`);
   if (memoryContext) parts.push(`\n${memoryContext}`);
   if (relevantContext) parts.push(`\n${relevantContext}`);
+
+  parts.push(
+    "\nGOOGLE WORKSPACE:" +
+      "\nYou have full access to Google Workspace via the `gws` CLI (use Bash tool). Services available:" +
+      "\n- Gmail: `gws gmail users messages list --params '{\"userId\":\"me\",\"maxResults\":10,\"q\":\"is:unread\"}'`" +
+      "\n- Gmail read: `gws gmail users messages get --params '{\"userId\":\"me\",\"id\":\"MSG_ID\",\"format\":\"full\"}'`" +
+      "\n- Gmail send: `gws gmail users messages send --params '{\"userId\":\"me\"}' --json '{\"raw\":\"BASE64_RFC2822\"}'`" +
+      "\n- Calendar: `gws calendar events list --params '{\"calendarId\":\"primary\",\"timeMin\":\"2026-03-19T00:00:00Z\",\"maxResults\":10,\"singleEvents\":true,\"orderBy\":\"startTime\"}'`" +
+      "\n- Calendar create: `gws calendar events insert --params '{\"calendarId\":\"primary\"}' --json '{\"summary\":\"Meeting\",\"start\":{\"dateTime\":\"...\"},\"end\":{\"dateTime\":\"...\"}}'`" +
+      "\n- Drive: `gws drive files list --params '{\"pageSize\":10}'`" +
+      "\n- Sheets read: `gws sheets spreadsheets values get --params '{\"spreadsheetId\":\"ID\",\"range\":\"Sheet1!A1:Z100\"}'`" +
+      "\n- Sheets append: `gws sheets spreadsheets values append --params '{\"spreadsheetId\":\"ID\",\"range\":\"Sheet1\",\"valueInputOption\":\"USER_ENTERED\"}' --json '{\"values\":[[\"a\",\"b\"]]}'`" +
+      "\n- Docs: `gws docs documents get --params '{\"documentId\":\"ID\"}'`" +
+      "\nUse `gws schema <service.resource.method>` to discover exact params for any method." +
+      "\nAlways use userId 'me' for Gmail. Always use calendarId 'primary' for Calendar unless specified."
+  );
+
+  parts.push(
+    "\nGHL / GROWTHOS CRM:" +
+      "\nYou have full access to GrowthOS (GoHighLevel) via MCP tools. You can:" +
+      "\n- Search, create, update, delete contacts (ghl_search_contacts, ghl_create_contact, etc.)" +
+      "\n- Manage pipelines and opportunities (ghl_list_pipelines, ghl_create_opportunity, etc.)" +
+      "\n- List and trigger workflows (ghl_list_workflows, ghl_add_contact_to_workflow)" +
+      "\n- Manage conversations and send messages (ghl_list_conversations, ghl_send_message)" +
+      "\n- Manage calendars and appointments (ghl_list_calendars, ghl_create_appointment)" +
+      "\n- Manage tags, notes, tasks, custom fields" +
+      "\n- Social media posting (ghl_create_social_post, ghl_upload_social_media)"
+  );
 
   parts.push(
     "\nMEMORY MANAGEMENT:" +
