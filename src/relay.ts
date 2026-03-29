@@ -33,24 +33,8 @@ const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claud
 
 // Tools Dexter is allowed to use without prompting
 const ALLOWED_TOOLS = [
-  // Google Calendar
-  "mcp__claude_ai_Google_Calendar__gcal_list_events",
-  "mcp__claude_ai_Google_Calendar__gcal_get_event",
-  "mcp__claude_ai_Google_Calendar__gcal_find_meeting_times",
-  "mcp__claude_ai_Google_Calendar__gcal_find_my_free_time",
-  "mcp__claude_ai_Google_Calendar__gcal_create_event",
-  "mcp__claude_ai_Google_Calendar__gcal_update_event",
-  "mcp__claude_ai_Google_Calendar__gcal_delete_event",
-  "mcp__claude_ai_Google_Calendar__gcal_list_calendars",
-  "mcp__claude_ai_Google_Calendar__gcal_respond_to_event",
-  // Gmail
-  "mcp__claude_ai_Gmail__gmail_search_messages",
-  "mcp__claude_ai_Gmail__gmail_read_message",
-  "mcp__claude_ai_Gmail__gmail_read_thread",
-  "mcp__claude_ai_Gmail__gmail_create_draft",
-  "mcp__claude_ai_Gmail__gmail_list_drafts",
-  "mcp__claude_ai_Gmail__gmail_get_profile",
-  "mcp__claude_ai_Gmail__gmail_list_labels",
+  // Google Calendar & Gmail — use `gws` CLI via Bash (auto-refreshing OAuth)
+  // MCP tools removed: their OAuth tokens expire and require manual re-auth
   // GHL / GrowthOS
   "mcp__ghl__ghl_search_contacts",
   "mcp__ghl__ghl_get_contact",
@@ -558,7 +542,9 @@ function buildPrompt(
 
   parts.push(
     "\nGOOGLE WORKSPACE:" +
-      "\nYou have full access to Google Workspace via the `gws` CLI (use Bash tool). Services available:" +
+      "\nIMPORTANT: Do NOT use MCP tools for Gmail or Calendar — they are disabled because their tokens expire." +
+      "\nALWAYS use the `gws` CLI via the Bash tool for ALL Google Workspace operations. It has auto-refreshing OAuth." +
+      "\nServices available:" +
       "\n- Gmail: `gws gmail users messages list --params '{\"userId\":\"me\",\"maxResults\":10,\"q\":\"is:unread\"}'`" +
       "\n- Gmail read: `gws gmail users messages get --params '{\"userId\":\"me\",\"id\":\"MSG_ID\",\"format\":\"full\"}'`" +
       "\n- Gmail send: `gws gmail users messages send --params '{\"userId\":\"me\"}' --json '{\"raw\":\"BASE64_RFC2822\"}'`" +
