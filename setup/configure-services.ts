@@ -58,6 +58,12 @@ const SERVICES: Record<string, ServiceDef> = {
     cron: "0 9 * * *",
     description: "Morning briefing (daily at 9am)",
   },
+  reminder: {
+    name: "claude-daily-reminder",
+    script: "examples/daily-reminder.ts",
+    cron: "0 8 * * *",
+    description: "Daily reminder (daily at 8am)",
+  },
 };
 
 async function checkPm2(): Promise<boolean> {

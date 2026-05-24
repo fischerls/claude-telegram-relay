@@ -172,7 +172,7 @@ Uses PM2 for process management.
 
 ## Phase 6: Proactive AI (Optional, ~5 min)
 
-Two features that turn a chatbot into an assistant.
+Three features that turn a chatbot into an assistant.
 
 ### Smart Check-ins
 `examples/smart-checkin.ts` — runs on a schedule, gathers context, asks Claude if it should reach out. If yes, sends a brief message. If no, stays silent.
@@ -180,12 +180,17 @@ Two features that turn a chatbot into an assistant.
 ### Morning Briefing
 `examples/morning-briefing.ts` — sends a daily summary. Pattern file with placeholder data fetchers.
 
-**macOS — schedule both:**
+### Daily Reminder
+`examples/daily-reminder.ts` — sends one standing principle every day at 8am:
+"You can outsource your thinking, but you can't outsource your understanding."
+Schedule it on its own with `--service reminder`, or include it via `--service all`.
+
+**macOS — schedule everything:**
 ```
 bun run setup:launchd -- --service all
 ```
 
-**Linux/Windows — schedule both:**
+**Linux/Windows — schedule everything:**
 ```
 bun run setup:services -- --service all
 ```

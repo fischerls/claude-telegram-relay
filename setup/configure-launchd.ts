@@ -152,6 +152,13 @@ const SERVICES: Record<string, ServiceConfig> = {
     calendarIntervals: [{ Hour: 9, Minute: 0 }],
     description: "Morning briefing (daily at 9am)",
   },
+  reminder: {
+    label: "com.claude.daily-reminder",
+    script: "examples/daily-reminder.ts",
+    keepAlive: false,
+    calendarIntervals: [{ Hour: 8, Minute: 0 }],
+    description: "Daily reminder (daily at 8am)",
+  },
 };
 
 async function installService(name: string, config: ServiceConfig): Promise<boolean> {
@@ -219,7 +226,7 @@ async function main() {
     const config = SERVICES[name];
     if (!config) {
       console.log(`  ${FAIL} Unknown service: ${name}`);
-      console.log(`      ${dim("Available: relay, checkin, briefing, all")}`);
+      console.log(`      ${dim("Available: relay, checkin, briefing, reminder, all")}`);
       allOk = false;
       continue;
     }
