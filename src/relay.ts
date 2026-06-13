@@ -244,15 +244,6 @@ async function callClaude(
   prompt: string,
   options?: { resume?: boolean; imagePath?: string; onProgress?: () => Promise<void> }
 ): Promise<string> {
-  const args = [CLAUDE_PATH, "-p", prompt, "--allowedTools", ALLOWED_TOOLS];
-
-  // Resume previous session if available and requested
-  if (options?.resume && session.sessionId) {
-    args.push("--resume", session.sessionId);
-  }
-
-  args.push("--output-format", "json");
-
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
 
   // Progress ticker: sends updates so the user knows we're not stuck
@@ -272,7 +263,19 @@ async function callClaude(
     if (progressTimer) clearInterval(progressTimer);
   };
 
-  try {
+  // Spawn the Claude CLI once. `useResume` controls whether we attach the
+  // stored session ID so the conversation continues where it left off.
+  const runOnce = async (
+    useResume: boolean
+  ): Promise<{ output: string; stderr: string; exitCode: number }> => {
+    const args = [CLAUDE_PATH, "-p", prompt, "--allowedTools", ALLOWED_TOOLS];
+
+    if (useResume && session.sessionId) {
+      args.push("--resume", session.sessionId);
+    }
+
+    args.push("--output-format", "json");
+
     const proc = spawn(args, {
       stdout: "pipe",
       stderr: "pipe",
@@ -286,6 +289,23 @@ async function callClaude(
     const output = await new Response(proc.stdout).text();
     const stderr = await new Response(proc.stderr).text();
     const exitCode = await proc.exited;
+    return { output, stderr, exitCode };
+  };
+
+  try {
+    const wantResume = Boolean(options?.resume && session.sessionId);
+    let { output, stderr, exitCode } = await runOnce(wantResume);
+
+    // Stale session recovery: if resuming failed because the stored session
+    // no longer exists, drop it and retry once as a fresh conversation.
+    // Without this, a stale session ID would make every message fail forever
+    // until session.json is deleted by hand.
+    if (exitCode !== 0 && wantResume && isStaleSessionError(stderr)) {
+      console.warn("Stored session is stale; starting a fresh conversation.");
+      session.sessionId = null;
+      await saveSession(session);
+      ({ output, stderr, exitCode } = await runOnce(false));
+    }
 
     clearProgress();
 
@@ -318,6 +338,12 @@ async function callClaude(
     console.error("Claude call failed:", msg);
     return `Error: Could not run Claude CLI`;
   }
+}
+
+// A resumed session can disappear (relay restarted elsewhere, ~/.claude store
+// cleared, etc.). The CLI reports this on stderr; detect it so we can recover.
+function isStaleSessionError(stderr: string): boolean {
+  return /No conversation found with session ID/i.test(stderr);
 }
 
 // ============================================================
@@ -585,17 +611,26 @@ function buildPrompt(
 }
 
 async function sendResponse(ctx: Context, response: string): Promise<void> {
+  // Telegram rejects empty messages ("Bad Request: message text is empty"),
+  // which can happen when Claude's whole reply was memory tags that got
+  // stripped out. Send a small acknowledgement instead of throwing.
+  const text = response.trim();
+  if (!text) {
+    await ctx.reply("Done.");
+    return;
+  }
+
   // Telegram has a 4096 character limit
   const MAX_LENGTH = 4000;
 
-  if (response.length <= MAX_LENGTH) {
-    await ctx.reply(response);
+  if (text.length <= MAX_LENGTH) {
+    await ctx.reply(text);
     return;
   }
 
   // Split long responses
   const chunks = [];
-  let remaining = response;
+  let remaining = text;
 
   while (remaining.length > 0) {
     if (remaining.length <= MAX_LENGTH) {
